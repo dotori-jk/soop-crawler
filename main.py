@@ -18,7 +18,6 @@ def home():
 @app.get("/scrape")
 async def scrape_comments():
     async with async_playwright() as p:
-        # Render 무료 서버 메모리 최적화 옵션 추가
         browser = await p.chromium.launch(
             headless=True,
             args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
@@ -26,28 +25,36 @@ async def scrape_comments():
         page = await browser.new_page()
         
         try:
-            await page.goto(TARGET_URL, timeout=60000)
-            await page.wait_for_selector("li", timeout=10000)
+            # 페이지 로드 대기
+            await page.goto(TARGET_URL, wait_until="domcontentloaded", timeout=60000)
+            await page.wait_for_timeout(3000) # 댓글 렌더링 안정화 3초 대기
 
+            # 댓글 데이터 추출
             comments_data = await page.evaluate('''() => {
                 const list = [];
-                document.querySelectorAll('ul.comment_list > li, div.comment_list li').forEach(item => {
-                    const nickEl = item.querySelector('.user_id') || item.querySelector('strong');
+                const items = document.querySelectorAll('ul.comment_list > li, div.comment_list li, .comment_area li');
+                
+                items.forEach(item => {
+                    const nickEl = item.querySelector('.user_id') || item.querySelector('strong') || item.querySelector('.nickname');
                     const linkEl = item.querySelector('a[href*="/station/"]');
                     const likeEl = item.querySelector('.like_count') || item.querySelector('[class*="like"]');
                     
                     if (nickEl) {
-                        list.push({
-                            nickname: nickEl.innerText.trim(),
-                            station_url: linkEl ? linkEl.href : '',
-                            likes: likeEl ? parseInt(likeEl.innerText.replace(/[^0-9]/g, '')) || 0 : 0
-                        });
+                        const nickText = nickEl.innerText.trim();
+                        if (nickText) {
+                            list.push({
+                                nickname: nickText,
+                                station_url: linkEl ? linkEl.href : '',
+                                likes: likeEl ? (parseInt(likeEl.innerText.replace(/[^0-9]/g, '')) || 0) : 0
+                            });
+                        }
                     }
                 });
                 return list;
             }''')
             await browser.close()
 
+            # Supabase DB 업데이트
             if comments_data:
                 supabase.table("comments").delete().neq("id", 0).execute()
                 supabase.table("comments").insert(comments_data).execute()
