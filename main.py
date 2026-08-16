@@ -25,9 +25,8 @@ async def scrape_comments():
         page = await browser.new_page()
         
         try:
-            # 페이지 로드 대기
             await page.goto(TARGET_URL, wait_until="domcontentloaded", timeout=60000)
-            await page.wait_for_timeout(3000) # 댓글 렌더링 안정화 3초 대기
+            await page.wait_for_timeout(3000)
 
             # 댓글 데이터 추출
             comments_data = await page.evaluate('''() => {
@@ -39,27 +38,32 @@ async def scrape_comments():
                     const linkEl = item.querySelector('a[href*="/station/"]');
                     const likeEl = item.querySelector('.like_count') || item.querySelector('[class*="like"]');
                     
-                    if (nickEl) {
-                        const nickText = nickEl.innerText.trim();
-                        if (nickText) {
-                            list.push({
-                                nickname: nickText,
-                                station_url: linkEl ? linkEl.href : '',
-                                likes: likeEl ? (parseInt(likeEl.innerText.replace(/[^0-9]/g, '')) || 0) : 0
-                            });
+                    if (nickEl && nickEl.innerText.trim()) {
+                        let likeNum = 0;
+                        if (likeEl) {
+                            likeNum = parseInt(likeEl.innerText.replace(/[^0-9]/g, '')) || 0;
                         }
+                        list.push({
+                            nickname: nickEl.innerText.trim(),
+                            station_url: linkEl ? linkEl.href : '',
+                            likes: likeNum
+                        });
                     }
                 });
                 return list;
             }''')
             await browser.close()
 
-            # Supabase DB 업데이트
-            if comments_data:
-                supabase.table("comments").delete().neq("id", 0).execute()
-                supabase.table("comments").insert(comments_data).execute()
+            # DB에 데이터 삽입 (오류 방지 예외 처리)
+            if comments_data and len(comments_data) > 0:
+                try:
+                    supabase.table("comments").delete().neq("id", 0).execute()
+                    supabase.table("comments").insert(comments_data).execute()
+                except Exception as db_err:
+                    return {"status": "partial_success", "db_error": str(db_err), "scraped_count": len(comments_data), "sample": comments_data[:2]}
 
             return {"status": "success", "count": len(comments_data)}
+
         except Exception as e:
             await browser.close()
             return {"status": "error", "message": str(e)}
