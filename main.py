@@ -11,35 +11,48 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 TARGET_URL = "https://www.sooplive.com/station/ecvhao/post/204516133"
 
+@app.get("/")
+def home():
+    return {"status": "ok", "message": "SOOP Crawler Server is Running"}
+
 @app.get("/scrape")
 async def scrape_comments():
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
+        # Render 무료 서버 메모리 최적화 옵션 추가
+        browser = await p.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
+        )
         page = await browser.new_page()
-        await page.goto(TARGET_URL)
-        await page.wait_for_selector("li")
+        
+        try:
+            await page.goto(TARGET_URL, timeout=60000)
+            await page.wait_for_selector("li", timeout=10000)
 
-        comments_data = await page.evaluate('''() => {
-            const list = [];
-            document.querySelectorAll('ul.comment_list > li, div.comment_list li').forEach(item => {
-                const nickEl = item.querySelector('.user_id') || item.querySelector('strong');
-                const linkEl = item.querySelector('a[href*="/station/"]');
-                const likeEl = item.querySelector('.like_count') || item.querySelector('[class*="like"]');
-                
-                if (nickEl) {
-                    list.push({
-                        nickname: nickEl.innerText.trim(),
-                        station_url: linkEl ? linkEl.href : '',
-                        likes: likeEl ? parseInt(likeEl.innerText.replace(/[^0-9]/g, '')) || 0 : 0
-                    });
-                }
-            });
-            return list;
-        }''')
-        await browser.close()
+            comments_data = await page.evaluate('''() => {
+                const list = [];
+                document.querySelectorAll('ul.comment_list > li, div.comment_list li').forEach(item => {
+                    const nickEl = item.querySelector('.user_id') || item.querySelector('strong');
+                    const linkEl = item.querySelector('a[href*="/station/"]');
+                    const likeEl = item.querySelector('.like_count') || item.querySelector('[class*="like"]');
+                    
+                    if (nickEl) {
+                        list.push({
+                            nickname: nickEl.innerText.trim(),
+                            station_url: linkEl ? linkEl.href : '',
+                            likes: likeEl ? parseInt(likeEl.innerText.replace(/[^0-9]/g, '')) || 0 : 0
+                        });
+                    }
+                });
+                return list;
+            }''')
+            await browser.close()
 
-        supabase.table("comments").delete().neq("id", 0).execute()
-        if comments_data:
-            supabase.table("comments").insert(comments_data).execute()
+            if comments_data:
+                supabase.table("comments").delete().neq("id", 0).execute()
+                supabase.table("comments").insert(comments_data).execute()
 
-        return {"status": "success", "count": len(comments_data)}
+            return {"status": "success", "count": len(comments_data)}
+        except Exception as e:
+            await browser.close()
+            return {"status": "error", "message": str(e)}
