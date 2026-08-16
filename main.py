@@ -28,56 +28,63 @@ async def scrape_comments():
         page = await context.new_page()
         
         try:
-            # DOM 구조 로딩 후 댓글 요소 대기
             await page.goto(TARGET_URL, wait_until="domcontentloaded", timeout=60000)
             await page.wait_for_timeout(4000)
 
-            comments_data = await page.evaluate('''() => {
+            # 프레임 전체 탐색 JS 함수
+            js_script = """
+            () => {
                 const list = [];
-                // SOOP 댓글 영역을 포괄하는 선택자
-                const items = document.querySelectorAll('div[class*="comment"] li, ul[class*="comment"] li, li[class*="comment"]');
+                const items = document.querySelectorAll('li');
                 
                 items.forEach(item => {
-                    const textContent = item.innerText || "";
                     const linkEl = item.querySelector('a[href*="/station/"]');
+                    const text = item.innerText || '';
                     
-                    // 닉네임 구출 (링크 태그나 강조 태그에서 수집)
-                    let nick = "";
                     if (linkEl && linkEl.innerText.trim()) {
-                        nick = linkEl.innerText.trim();
-                    } else {
-                        const strongEl = item.querySelector('strong, em');
-                        if (strongEl) nick = strongEl.innerText.trim();
-                    }
-
-                    // 좋아요 수 추출 (숫자 추출)
-                    let likes = 0;
-                    const numbers = textContent.match(/\\d+/g);
-                    if (numbers && numbers.length > 0) {
-                        likes = parseInt(numbers[numbers.length - 1]) || 0;
-                    }
-
-                    if (nick && nick.length < 30) {
-                        list.push({
-                            nickname: nick,
-                            station_url: linkEl ? linkEl.href : '',
-                            likes: likes
-                        });
+                        const nick = linkEl.innerText.trim();
+                        let likes = 0;
+                        const match = text.match(/(\\d+)(?=\\s*\\[답글\\]|\\s*답글|$)/) || text.match(/\\b\\d+\\b/g);
+                        if (match) {
+                            likes = parseInt(match[match.length - 1]) || 0;
+                        }
+                        
+                        if (nick && !['VOD', '게시판', 'Catch', '우왁굳'].includes(nick)) {
+                            list.push({
+                                nickname: nick,
+                                station_url: linkEl.href,
+                                likes: likes
+                            });
+                        }
                     }
                 });
                 return list;
-            }''')
+            }
+            """
+
+            all_comments = []
+            for frame in page.frames:
+                try:
+                    comments = await frame.evaluate(js_script)
+                    if comments:
+                        all_comments.extend(comments)
+                except Exception:
+                    continue
+
+            # 중복 닉네임 제거
+            unique_comments = list({c['nickname']: c for c in all_comments}.values())
+
             await browser.close()
 
             # Supabase DB 저장
-            if comments_data and len(comments_data) > 0:
+            if unique_comments and len(unique_comments) > 0:
                 try:
                     supabase.table("comments").delete().neq("id", 0).execute()
-                    supabase.table("comments").insert(comments_data).execute()
+                    supabase.table("comments").insert(unique_comments).execute()
                 except Exception as db_err:
-                    return {"status": "partial_success", "db_error": str(db_err), "count": len(comments_data), "sample": comments_data[:3]}
+                    return {"status": "partial_success", "db_error": str(db_err), "count": len(unique_comments), "sample": unique_comments[:3]}
 
-            return {"status": "success", "count": len(comments_data), "sample": comments_data[:3]}
+            return {"status": "success", "count": len(unique_comments), "sample": unique_comments[:3]}
 
         except Exception as e:
             await browser.close()
