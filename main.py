@@ -60,7 +60,12 @@ async def scrape_comments():
                     supabase.table("comments").delete().neq("id", 0).execute()
                     supabase.table("comments").insert(comments_data).execute()
                 except Exception as db_err:
-                    return {"status": "partial_success", "db_error": str(db_err), "scraped_count": len(comments_data), "sample": comments_data[:2]}
+                    return {
+                        "status": "partial_success", 
+                        "db_error": str(db_err), 
+                        "scraped_count": len(comments_data), 
+                        "sample": comments_data[:2]
+                    }
 
             return {"status": "success", "count": len(comments_data)}
 
