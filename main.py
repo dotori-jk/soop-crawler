@@ -22,31 +22,46 @@ async def scrape_comments():
             headless=True,
             args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
         )
-        page = await browser.new_page()
+        context = await browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        )
+        page = await context.new_page()
         
         try:
+            # DOM 구조 로딩 후 댓글 요소 대기
             await page.goto(TARGET_URL, wait_until="domcontentloaded", timeout=60000)
-            await page.wait_for_timeout(3000)
+            await page.wait_for_timeout(4000)
 
-            # 댓글 데이터 추출
             comments_data = await page.evaluate('''() => {
                 const list = [];
-                const items = document.querySelectorAll('ul.comment_list > li, div.comment_list li, .comment_area li');
+                // SOOP 댓글 영역을 포괄하는 선택자
+                const items = document.querySelectorAll('div[class*="comment"] li, ul[class*="comment"] li, li[class*="comment"]');
                 
                 items.forEach(item => {
-                    const nickEl = item.querySelector('.user_id') || item.querySelector('strong') || item.querySelector('.nickname');
+                    const textContent = item.innerText || "";
                     const linkEl = item.querySelector('a[href*="/station/"]');
-                    const likeEl = item.querySelector('.like_count') || item.querySelector('[class*="like"]');
                     
-                    if (nickEl && nickEl.innerText.trim()) {
-                        let likeNum = 0;
-                        if (likeEl) {
-                            likeNum = parseInt(likeEl.innerText.replace(/[^0-9]/g, '')) || 0;
-                        }
+                    // 닉네임 구출 (링크 태그나 강조 태그에서 수집)
+                    let nick = "";
+                    if (linkEl && linkEl.innerText.trim()) {
+                        nick = linkEl.innerText.trim();
+                    } else {
+                        const strongEl = item.querySelector('strong, em');
+                        if (strongEl) nick = strongEl.innerText.trim();
+                    }
+
+                    // 좋아요 수 추출 (숫자 추출)
+                    let likes = 0;
+                    const numbers = textContent.match(/\\d+/g);
+                    if (numbers && numbers.length > 0) {
+                        likes = parseInt(numbers[numbers.length - 1]) || 0;
+                    }
+
+                    if (nick && nick.length < 30) {
                         list.push({
-                            nickname: nickEl.innerText.trim(),
+                            nickname: nick,
                             station_url: linkEl ? linkEl.href : '',
-                            likes: likeNum
+                            likes: likes
                         });
                     }
                 });
@@ -54,20 +69,15 @@ async def scrape_comments():
             }''')
             await browser.close()
 
-            # DB에 데이터 삽입 (오류 방지 예외 처리)
+            # Supabase DB 저장
             if comments_data and len(comments_data) > 0:
                 try:
                     supabase.table("comments").delete().neq("id", 0).execute()
                     supabase.table("comments").insert(comments_data).execute()
                 except Exception as db_err:
-                    return {
-                        "status": "partial_success", 
-                        "db_error": str(db_err), 
-                        "scraped_count": len(comments_data), 
-                        "sample": comments_data[:2]
-                    }
+                    return {"status": "partial_success", "db_error": str(db_err), "count": len(comments_data), "sample": comments_data[:3]}
 
-            return {"status": "success", "count": len(comments_data)}
+            return {"status": "success", "count": len(comments_data), "sample": comments_data[:3]}
 
         except Exception as e:
             await browser.close()
